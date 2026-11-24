@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+
+# Локальные бэкапы и результаты сборки
+backsaves/
+build/
+dist/
+equity_curve.png

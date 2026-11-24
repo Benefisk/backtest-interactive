@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Бэктест стратегии SMA — интерактивный график</title>
+<style>
+    /* Тёмная тема в стиле TradingView */
+    html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #131722;
+        color: #d1d4dc;
+        font-family: Arial, Helvetica, sans-serif;
+        overflow: hidden;
+    }
+
+    #layout {
+        display: flex;
+        height: 100%;
+    }
+
+    #chart-area {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+    }
+
+    #chart {
+        position: absolute;
+        inset: 0;
+    }
+
+    /* Прозрачный слой для линейки: ловит клики поверх графика.
+       z-index нужен, т.к. внутренние контейнеры библиотеки поднимаются
+       над соседними элементами без z-index, и слой оказывается под canvas. */
+    #ruler-overlay {
+        position: absolute;
+        inset: 0;
+        display: none;
+        cursor: crosshair;
+        z-index: 5;
+    }
+
+    /* SVG с линейками и подписями */
+    #ruler-svg {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 5;
+    }
+
+    /* Правая панель со сводкой метрик */
+    #side-panel {
+        width: 280px;
+        padding: 14px 16px;
+        box-sizing: border-box;
+        background: #1e222d;
+        border-left: 1px solid #2a2e39;
+        overflow-y: auto;
+        white-space: pre-line;
+        font-size: 13px;
+        line-height: 1.55;
+    }
+
+    #toolbar {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 10;
+        display: flex;
+        gap: 8px;
+    }
+
+    .tool-btn {
+        background: #2a2e39;
+        color: #d1d4dc;
+        border: 1px solid #3a3e49;
+        border-radius: 4px;
+        padding: 6px 12px;
+        font-size: 13px;
+        cursor: pointer;
+    }
+
+    .tool-btn:hover {
+        background: #363c4d;
+    }
+
+    .tool-btn.active {
+        background: #2962ff;
+        border-color: #2962ff;
+        color: #fff;
+    }
+
+    #ruler-hint {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 10;
+        display: none;
+        background: rgba(41, 98, 255, 0.15);
+        border: 1px solid #2962ff;
+        border-radius: 4px;
+        padding: 6px 10px;
+        font-size: 12px;
+        color: #9db8ff;
+    }
+</style>
+</head>
+<body>
+
+<div id="layout">
+    <div id="chart-area">
+        <div id="toolbar">
+            <button id="btn-ruler" class="tool-btn">📏 Линейка</button>
+            <button id="btn-clear" class="tool-btn">Очистить</button>
+        </div>
+        <div id="ruler-hint">Линейка: кликните две точки на графике. Esc — выход</div>
+        <div id="chart"></div>
+        <svg id="ruler-svg"></svg>
+        <div id="ruler-overlay"></div>
+    </div>
+    <div id="side-panel"></div>
+</div>
+
+<script src="lightweight-charts.standalone.production.js"></script>
+<script src="chart_data.js"></script>
+<script>
+"use strict";
+
+var DATA = window.CHART_DATA;
+var DATE_INDEX = {}; // ISO-дата -> индекс в массивах (для прилипания точек)
+
+var chart = LightweightCharts.createChart(document.getElementById("chart"), {
+    layout: {
+        background: { color: "#131722" },
+        textColor: "#d1d4dc",
+    },
+    grid: {
+        vertLines: { color: "#1e222d" },
+        horzLines: { color: "#1e222d" },
+    },
+    crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+        vertLine: { color: "#758696", labelBackgroundColor: "#2962ff" },
+        horzLine: { color: "#758696", labelBackgroundColor: "#2962ff" },
+    },
+    rightPriceScale: { borderColor: "#2a2e39" },
+    timeScale: { borderColor: "#2a2e39", timeVisible: true },
+});
+
+var strategySeries = chart.addLineSeries({
+    color: "#2962ff",
+    lineWidth: 2,
+    title: "Стратегия",
+    priceLineVisible: false,
+});
+
+var buyHoldSeries = chart.addLineSeries({
+    color: "#ff9800",
+    lineWidth: 2,
+    title: "В долгую",
+    priceLineVisible: false,
+});
+
+// Заполняем график; даты MOEX в формате ГГГГ-ММ-ДД понимаются как business day.
+var strategyPoints = [];
+var buyHoldPoints = [];
+for (var i = 0; i < DATA.dates.length; i++) {
+    DATE_INDEX[DATA.dates[i]] = i;
+    strategyPoints.push({ time: DATA.dates[i], value: DATA.equity[i] });
+    buyHoldPoints.push({ time: DATA.dates[i], value: DATA.buyHold[i] });
+}
+strategySeries.setData(strategyPoints);
+buyHoldSeries.setData(buyHoldPoints);
+chart.timeScale().fitContent();
+
+// Легенда сверху: текущие значения рядом с названиями.
+var legend = document.createElement("div");
+legend.style.cssText =
+    "position:absolute;top:52px;left:10px;z-index:10;font-size:12px;pointer-events:none;";
+document.getElementById("chart-area").appendChild(legend);
+function updateLegend(param) {
+    var text =
+        '<span style="color:#2962ff">— Стратегия</span>　' +
+        '<span style="color:#ff9800">— В долгую</span>';
+    if (param.time && DATE_INDEX[param.time] !== undefined) {
+        var i = DATE_INDEX[param.time];
+        text +=
+            '　<span style="color:#787b86">' + param.time +
+            ': стратегия <b style="color:#d1d4dc">' + DATA.equity[i].toFixed(4) +
+            "</b>, в долгую <b style=\"color:#d1d4dc\">" + DATA.buyHold[i].toFixed(4) + "</b></span>";
+    }
+    legend.innerHTML = text;
+}
+updateLegend({});
+chart.subscribeCrosshairMove(function (param) { updateLegend(param); });
+
+// Текстовая сводка метрик в правой панели.
+document.getElementById("side-panel").textContent = DATA.metrics;
+
+/* --------------------------- Линейка-замер --------------------------- */
+
+var rulerOverlay = document.getElementById("ruler-overlay");
+var rulerSvg = document.getElementById("ruler-svg");
+var btnRuler = document.getElementById("btn-ruler");
+var btnClear = document.getElementById("btn-clear");
+var rulerHint = document.getElementById("ruler-hint");
+
+var rulerMode = false;      // включён ли режим линейки
+var pendingPoint = null;    // первая поставленная точка (индекс даты)
+var measurements = [];      // готовые измерения: {a: индекс, b: индекс}
+
+// Включаем/выключаем режим линейки.
+function setRulerMode(on) {
+    rulerMode = on;
+    btnRuler.classList.toggle("active", on);
+    rulerOverlay.style.display = on ? "block" : "none";
+    rulerHint.style.display = on ? "block" : "none";
+    if (!on) {
+        pendingPoint = null;
+        redrawRulers();
+    }
+}
+
+btnRuler.addEventListener("click", function () { setRulerMode(!rulerMode); });
+btnClear.addEventListener("click", function () {
+    measurements = [];
+    pendingPoint = null;
+    redrawRulers();
+});
+
+// Esc выключает режим линейки.
+document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") setRulerMode(false);
+});
+
+// Переводим координату клика в ближайшую реальную дату массива.
+function coordinateToDateIndex(x) {
+    var time = chart.timeScale().coordinateToTime(x);
+    if (time === null) return null;
+    var date = typeof time === "object" ? time.time : time;
+    // Ищем ближайшую дату обычным двоичным поиском.
+    var dates = DATA.dates;
+    var lo = 0, hi = dates.length - 1;
+    while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (dates[mid] < date) lo = mid + 1; else hi = mid;
+    }
+    if (lo > 0) {
+        // Выбираем из двух соседей тот, что ближе к дате клика.
+        var prevTime = new Date(dates[lo - 1]).getTime();
+        var nextTime = new Date(dates[lo]).getTime();
+        var clickTime = new Date(date).getTime();
+        if (Math.abs(prevTime - clickTime) <= Math.abs(nextTime - clickTime)) {
+            lo = lo - 1;
+        }
+    }
+    return lo;
+}
+
+// Максимальная просадка на участке [a, b] кривой стратегии:
+// от максимума после точки A до минимума до точки B.
+function maxDrawdownOnSegment(a, b) {
+    var peak = -Infinity;
+    var trough = Infinity;
+    var maxDd = 0;
+    for (var i = a; i <= b; i++) {
+        var v = DATA.equity[i];
+        if (v > peak) {
+            peak = v;
+            trough = v; // новый максимум сбрасывает минимум
+        } else if (v < trough) {
+            trough = v;
+            var dd = trough / peak - 1;
+            if (dd < maxDd) maxDd = dd;
+        }
+    }
+    return maxDd * 100;
+}
+
+// Клик по overlay в режиме линейки: ставим точку A, затем точку B.
+rulerOverlay.addEventListener("click", function (event) {
+    var rect = rulerOverlay.getBoundingClientRect();
+    var x = event.clientX - rect.left;
+    var index = coordinateToDateIndex(x);
+    if (index === null) return;
+
+    if (pendingPoint === null) {
+        pendingPoint = index;
+    } else {
+        var a = Math.min(pendingPoint, index);
+        var b = Math.max(pendingPoint, index);
+        measurements.push({ a: a, b: b });
+        pendingPoint = null; // следующий клик начнёт новое измерение
+    }
+    redrawRulers();
+});
+
+// Текст подписи измерения: % изменения, дней между точками, просадка.
+function measurementLabel(m) {
+    var change = (DATA.equity[m.b] / DATA.equity[m.a] - 1) * 100;
+    var days = Math.round(
+        (new Date(DATA.dates[m.b]) - new Date(DATA.dates[m.a])) / 86400000
+    );
+    var dd = maxDrawdownOnSegment(m.a, m.b);
+    var sign = change >= 0 ? "+" : "";
+    return (
+        sign + change.toFixed(2) + "%　" +
+        days + " дн.　просадка " + dd.toFixed(2) + "%"
+    );
+}
+
+// Рисуем все линейки: вызывается после клика и при зуме/скролле.
+function redrawRulers() {
+    var area = document.getElementById("chart-area");
+    var width = area.clientWidth;
+    var height = area.clientHeight;
+    rulerSvg.setAttribute("width", width);
+    rulerSvg.setAttribute("height", height);
+    rulerSvg.setAttribute("viewBox", "0 0 " + width + " " + height);
+
+    var parts = [];
+    var all = measurements.slice();
+    if (pendingPoint !== null) all.push({ a: pendingPoint, b: pendingPoint, pending: true });
+
+    for (var k = 0; k < all.length; k++) {
+        var m = all[k];
+        var timeA = DATA.dates[m.a];
+        var timeB = DATA.dates[m.b];
+        var xA = chart.timeScale().timeToCoordinate(timeA);
+        var xB = chart.timeScale().timeToCoordinate(timeB);
+        var yA = strategySeries.priceToCoordinate(DATA.equity[m.a]);
+        var yB = strategySeries.priceToCoordinate(DATA.equity[m.b]);
+        if (xA === null || xB === null || yA === null || yB === null) continue;
+
+        // Кружки-точки A и B.
+        parts.push(
+            '<circle cx="' + xA + '" cy="' + yA + '" r="4" fill="#2962ff" stroke="#fff" stroke-width="1"/>'
+        );
+        if (!m.pending) {
+            parts.push(
+                '<circle cx="' + xB + '" cy="' + yB + '" r="4" fill="#2962ff" stroke="#fff" stroke-width="1"/>'
+            );
+            // Линия между точками.
+            parts.push(
+                '<line x1="' + xA + '" y1="' + yA + '" x2="' + xB + '" y2="' + yB +
+                '" stroke="#2962ff" stroke-width="1.5" stroke-dasharray="5,4"/>'
+            );
+        }
+
+        // Подпись в средней точке линии.
+        var mx = (xA + xB) / 2;
+        var my = (yA + yB) / 2;
+        var label = m.pending ? "..." : measurementLabel(m);
+        var textWidth = label.length * 6.6 + 12;
+        var tx = Math.min(Math.max(mx - textWidth / 2, 4), width - textWidth - 4);
+        var ty = Math.min(Math.max(my - 28, 4), height - 24);
+        parts.push(
+            '<rect x="' + tx + '" y="' + ty + '" width="' + textWidth +
+            '" height="20" rx="3" fill="rgba(30,34,45,0.92)" stroke="#2962ff" stroke-width="1"/>',
+            '<text x="' + (tx + textWidth / 2) + '" y="' + (ty + 14) +
+            '" fill="#d1d4dc" font-size="11" text-anchor="middle">' + label + '</text>'
+        );
+    }
+    rulerSvg.innerHTML = parts.join("");
+}
+
+// Подписи и линии пересчитываем при зуме/скролле.
+chart.timeScale().subscribeVisibleLogicalRangeChange(redrawRulers);
+// И при изменении размера окна.
+window.addEventListener("resize", function () {
+    var area = document.getElementById("chart-area");
+    chart.applyOptions({ width: area.clientWidth, height: area.clientHeight });
+    redrawRulers();
+});
+</script>
+</body>
+</html>
