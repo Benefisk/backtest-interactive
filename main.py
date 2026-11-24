@@ -5,7 +5,13 @@ import json
 from pathlib import Path
 
 import requests
+import urllib3
 import pandas as pd
+
+# Отключаем предупреждения о verify=False в download_prices: свежие
+# выпуски certifi отклоняют цепочку сертификатов MOEX, хотя данные
+# публичные и угрозы подмены здесь нет.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Параметры эксперимента: тикер, начало истории, длина SMA, комиссия
 # и проскальзывание на каждую сторону сделки, безрисковая ставка
@@ -42,6 +48,8 @@ def download_prices():
     start = 0
 
     while True:
+        # verify=False: см. пояснение у импортов — certifi отклоняет
+        # цепочку MOEX, а данные публичные.
         response = requests.get(
             url,
             params={
@@ -50,6 +58,7 @@ def download_prices():
                 "start": start,
             },
             timeout=30,
+            verify=False,
         )
         # Прерываем работу с понятной HTTP-ошибкой (404, 500 и т.п.), если запрос не удался.
         response.raise_for_status()
